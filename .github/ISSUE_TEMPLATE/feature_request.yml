@@ -1,0 +1,22 @@
+name: Feature or documentation request
+description: Suggest a focused improvement to the UI container, deployment examples, or documentation.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the task, who needs it, and the current limitation. Do not include private infrastructure details.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed improvement
+      description: Describe the desired behavior or documentation and any alternatives you considered.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Deployment context
+      description: If relevant, include Docker/Kubernetes, EKS or Istio, database type/version, and persistence needs. Use placeholders for private information.

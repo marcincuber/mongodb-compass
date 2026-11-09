@@ -1,0 +1,138 @@
+# MongoDB without database TLS, with UI Basic authentication; temporary settings.
+# Replace the image, database host, and UI credentials before applying.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mongodb-compass
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mongodb-compass-secrets
+  namespace: mongodb-compass
+type: Opaque
+stringData:
+  UI_USERNAME: admin
+  UI_PASSWORD: replace-with-a-strong-password
+  # Database credentials are separate from the UI login.
+  MONGODB_USERNAME: ""
+  MONGODB_PASSWORD: ""
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mongodb-compass-config
+  namespace: mongodb-compass
+data:
+  CONNECTION_TYPE: mongodb
+  COMPASS_CONNECTION_NAME: MongoDB
+  MONGODB_HOST: mongodb.database.svc.cluster.local
+  MONGODB_PORT: "27017"
+  MONGODB_AUTH_SOURCE: admin
+  MONGODB_TLS: "false"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongodb-compass
+  namespace: mongodb-compass
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mongodb-compass
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mongodb-compass
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      nodeSelector:
+        kubernetes.io/os: linux
+        kubernetes.io/arch: amd64
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: compass
+          # Replace this with your published ECR image.
+          image: 123456789012.dkr.ecr.eu-west-2.amazonaws.com/mongodb-compass:1.53.2-6
+          ports:
+            - name: http
+              containerPort: 6080
+          envFrom:
+            - configMapRef:
+                name: mongodb-compass-config
+            - secretRef:
+                name: mongodb-compass-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+              ephemeral-storage: 1Gi
+            limits:
+              cpu: "2"
+              memory: 3Gi
+              ephemeral-storage: 3Gi
+          startupProbe:
+            exec:
+              command: [python3, /opt/compass-container/healthcheck.py]
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            exec:
+              command: [python3, /opt/compass-container/healthcheck.py]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: [python3, /opt/compass-container/healthcheck.py]
+            periodSeconds: 30
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: home
+              mountPath: /home/compass
+            - name: tmp
+              mountPath: /tmp
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: home
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb-compass
+  namespace: mongodb-compass
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: mongodb-compass
+  ports:
+    - name: http
+      port: 6080
+      targetPort: http

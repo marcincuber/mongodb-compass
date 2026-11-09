@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+!.env.documentdb.example
+__pycache__/
+*.py[cod]
+.DS_Store
+secrets/
+certs/
+.cache/
+reports/

@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!app/
+!app/*.py
+!app/nginx.conf
+app/__pycache__/

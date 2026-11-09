@@ -1,0 +1,52 @@
+name: Bug report
+description: Report a reproducible build, browser, connection, or deployment problem.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve this project. Check the Operations guide before filing.
+        For vulnerabilities, follow SECURITY.md instead of this public form.
+        Remove passwords, tokens, private keys, private endpoints, and database contents from all output.
+  - type: input
+    id: version
+    attributes:
+      label: Image tag and repository revision
+      description: Include the image tag or digest and source commit if available.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include host OS/architecture, Docker or Kubernetes version, deployment method, browser, and database type/version. Do not include private endpoints.
+      placeholder: "Example: Apple Silicon + Docker Desktop, linux/amd64 emulation, DocumentDB 8.0, Chrome."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Provide minimal steps and sanitized configuration. Say which example or connection method you used.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+      description: State whether the problem affects the build, UI login, desktop, database connection, or Kubernetes deployment.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized logs or screenshots
+      description: Include relevant errors and checks already attempted. Review screenshots for credentials and database contents.
+  - type: checkboxes
+    id: review
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and reviewed the troubleshooting guide.
+          required: true
+        - label: This report contains no credentials or sensitive database/infrastructure information.
+          required: true
