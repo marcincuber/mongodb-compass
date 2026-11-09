@@ -1,8 +1,8 @@
-"""Opt-in Docker tests for the desktop, authentication, probes, and persistent settings."""
-
+"""Opt-in browser runtime, authentication, database protocol, TLS and persistence checks."""
 import base64
 import hashlib
 import http.client
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -10,167 +10,243 @@ import tempfile
 import time
 import uuid
 
-IMAGE = os.environ.get("IMAGE_NAME", "mongodb-compass") + ":" + os.environ.get("IMAGE_TAG", "local")
-USERNAME = "smoke-operator"
+ROOT = Path(__file__).resolve().parents[1]
+IMAGE = os.environ.get('IMAGE_NAME', 'mongodb-compass') + ':' + os.environ.get('IMAGE_TAG', 'local')
+USERNAME = 'smoke-operator'
 PASSWORD = 'smoke-long-pa$$word:with / punctuation!'
+DB_PASSWORD = 'database-p@ss word/$!'
 
 
 def docker(*args, **kwargs):
-    return subprocess.run(["docker", *args], capture_output=True, text=True, check=True, **kwargs).stdout.strip()
+    return subprocess.run(['docker', *args], capture_output=True, text=True, check=True, **kwargs).stdout.strip()
 
 
-def test_documentdb_tls_policy():
-    check = r'''
-import os, sys, tempfile
-from pathlib import Path
-from urllib.parse import parse_qsl, urlsplit
-sys.path.insert(0, "/opt/compass-container")
-from connection import ConfigurationError, build_connection
-assert os.getuid() == 10001
-base = {"CONNECTION_TYPE": "documentdb", "MONGODB_HOST": "example.invalid"}
-safe = build_connection(base)
-options = dict(parse_qsl(urlsplit(safe["connectionOptions"]["connectionString"]).query))
-assert options["tls"] == "true"
-assert options["tlsAllowInvalidCertificates"] == options["tlsAllowInvalidHostnames"] == "false"
-assert options["tlsCAFile"] == "/opt/certs/global-bundle.pem"
-cases = [{"MONGODB_TLS": "false"}, {"MONGODB_TLS_INSECURE": "true"},
-         {"MONGODB_TLS_ALLOW_INVALID_CERTIFICATES": "true"},
-         {"MONGODB_TLS_ALLOW_INVALID_HOSTNAMES": "true"},
-         {"MONGODB_URI": "mongodb://db/?ssl=false", "MONGODB_TLS": "true"},
-         {"MONGODB_OPTIONS": '{"tlsInsecure":true}'},
-         {"MONGODB_OPTIONS": '{"tls":false,"tls":true}'}]
-def rejected(env):
-    try: build_connection({**base, **env})
-    except ConfigurationError: return
-    raise AssertionError("Unsafe DocumentDB configuration was accepted")
-for env in cases: rejected(env)
-with tempfile.TemporaryDirectory() as directory:
-    ca = Path(directory) / "ca.pem"
-    ca.write_text("not a certificate")
-    rejected({"MONGODB_TLS_CA_FILE": str(ca)})
-    ca.write_bytes(Path("/opt/certs/global-bundle.pem").read_bytes())
-    ca.chmod(0)
-    rejected({"MONGODB_TLS_CA_FILE": str(ca)})
-    ca.chmod(0o600)
-'''
-    docker("run", "--rm", "--platform", "linux/amd64", "--entrypoint", "python3", IMAGE, "-c", check)
-    invalid = subprocess.run(["docker", "run", "--rm", "--platform", "linux/amd64",
-                              "--env", "CONNECTION_TYPE=documentdb", "--env", "MONGODB_HOST=example.invalid",
-                              "--env", "MONGODB_TLS=false", IMAGE], capture_output=True, text=True)
-    assert invalid.returncode == 2 and "DocumentDB requires TLS" in invalid.stderr
-    print("DocumentDB TLS policy, real AWS CA parsing, unreadable CA rejection, and startup failure passed.")
-
-
-def probe(port, path, credentials=None, websocket=False):
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+def request(port, path='/', credentials=None, method='GET', data=None, websocket=False):
+    connection = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
     headers = {}
     if credentials:
-        headers["Authorization"] = "Basic " + base64.b64encode(credentials.encode()).decode()
+        headers['Authorization'] = 'Basic ' + base64.b64encode(credentials.encode()).decode()
     key = base64.b64encode(os.urandom(16)).decode()
     if websocket:
-        headers.update({"Upgrade": "websocket", "Connection": "Upgrade",
-                        "Sec-WebSocket-Version": "13", "Sec-WebSocket-Key": key,
-                        "Sec-WebSocket-Protocol": "binary"})
-    response = None
+        headers.update({'Upgrade': 'websocket', 'Connection': 'Upgrade', 'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': key})
+    if data is not None:
+        headers['Content-Type'] = 'application/json'
+        data = json.dumps(data)
     try:
-        connection.request("GET", path, headers=headers)
+        connection.request(method, path, body=data, headers=headers)
         response = connection.getresponse()
         if response.status == 101:
-            expected = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
-            assert response.getheader("Sec-WebSocket-Accept") == expected
-            frame = response.fp.read(2)
-            assert len(frame) == 2 and frame[0] & 15 == 2, "Expected a binary VNC WebSocket frame"
-            length = frame[1] & 127
-            assert 0 < length < 126
-            assert response.fp.read(length).startswith(b"RFB "), "VNC handshake missing"
+            expected = base64.b64encode(hashlib.sha1((key + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()).decode()
+            assert response.getheader('Sec-WebSocket-Accept') == expected
+            body = b''
         else:
-            response.read()
-        return response.status, response.getheader("WWW-Authenticate")
+            body = response.read()
+        return response.status, body
     finally:
-        if response:
-            response.close()
         connection.close()
 
 
-def test_gateway(file_mode, settings_volume=None, expect_settings=False):
-    name = "compass-ui-smoke-" + uuid.uuid4().hex[:10]
-    with tempfile.TemporaryDirectory(prefix="compass-ui-secrets-") as directory:
-        args = ["run", "--detach", "--platform", "linux/amd64", "--name", name,
-                "--read-only", "--user=10001:10001", "--cap-drop=ALL",
-                "--security-opt=no-new-privileges:true", "--shm-size=1g", "--memory=3g", "--cpus=2",
-                "--tmpfs", "/tmp:rw,nosuid,nodev,uid=10001,gid=10001,mode=1777",
-                "--tmpfs", "/home/compass:rw,nosuid,nodev,uid=10001,gid=10001,mode=0700",
-                "--publish", "127.0.0.1::6080"]
-        if settings_volume:
-            args += ["--mount", f"type=volume,src={settings_volume},dst=/home/compass/.config"]
-        for variable, value in (("UI_USERNAME", USERNAME), ("UI_PASSWORD", PASSWORD)):
-            if file_mode:
-                filename = Path(directory) / variable
-                filename.write_text(value + "\n")
-                filename.chmod(0o644)  # Dummy test credentials, readable by the container UID.
-                target = "/run/secrets/" + variable
-                args += ["--mount", f"type=bind,src={filename},dst={target},readonly",
-                         "--env", variable + "_FILE=" + target]
-            else:
-                args += ["--env", variable + "=" + value]
-        if file_mode:
-            # Local probes must work without relying on the user's NO_PROXY configuration.
-            args += ["--env", "HTTP_PROXY=http://127.0.0.1:9", "--env", "NO_PROXY="]
+def start_web(name, env=None, mounts=(), network=None, file_mode=False):
+    args = ['run', '-d', '--platform', 'linux/amd64', '--name', name, '--read-only',
+            '--cap-drop=ALL', '--security-opt=no-new-privileges:true', '--user=10001:10001',
+            '--tmpfs', '/tmp:rw,nosuid,nodev,uid=10001,gid=10001,mode=1777',
+            '--tmpfs', '/home/compass:rw,nosuid,nodev,uid=10001,gid=10001,mode=0700',
+            '-p', '127.0.0.1::6080']
+    if network:
+        args += ['--network', network]
+    for mount in mounts:
+        args += ['--mount', mount]
+    values = {'UI_USERNAME': USERNAME, 'UI_PASSWORD': PASSWORD, **(env or {})}
+    for key, value in values.items():
+        args += ['-e', key + '=' + value]
+    docker(*args, IMAGE)
+    return wait_ready(name)
+
+
+def wait_ready(name):
+    port = int(docker('port', name, '6080/tcp').rsplit(':', 1)[1])
+    deadline = time.monotonic() + 45
+    while True:
         try:
-            docker(*args, IMAGE)
-            port = int(docker("port", name, "6080/tcp").rsplit(":", 1)[1])
-            deadline = time.monotonic() + 45
-            while True:
-                try:
-                    if (probe(port, "/healthz")[0] == 200 and
-                            probe(port, "/vnc.html", USERNAME + ":" + PASSWORD)[0] == 200):
-                        windows = docker("exec", name, "xwininfo", "-root", "-tree")
-                        if '"MongoDB Compass"' in windows:
-                            break
-                except (OSError, http.client.HTTPException):
-                    pass
-                if time.monotonic() >= deadline:
-                    raise AssertionError("Compass window and browser gateway did not become ready")
-                time.sleep(0.5)
-            for websocket, path in ((False, "/vnc.html"), (True, "/websockify")):
-                for credentials in (None, USERNAME + ":wrong-password", USERNAME + ":" + PASSWORD[:8],
-                                    "wrong-user:" + PASSWORD):
-                    status, challenge = probe(port, path, credentials, websocket)
-                    assert status == 401 and challenge.startswith("Basic "), (path, status)
-                status = probe(port, path, USERNAME + ":" + PASSWORD, websocket)[0]
-                assert status == (101 if websocket else 200), (path, status)
-            docker("exec", name, "python3", "/opt/compass-container/healthcheck.py")
-            if settings_volume:
-                if expect_settings:
-                    docker("exec", name, "python3", "-c",
-                           'from pathlib import Path; assert (Path.home()/".config/smoke-persistence").read_text() == "saved"')
-                else:
-                    docker("exec", name, "python3", "-c",
-                           'from pathlib import Path; (Path.home()/".config/smoke-persistence").write_text("saved")')
-            docker("stop", "--timeout", "15", name)
-            assert docker("inspect", name, "--format", "{{.State.ExitCode}}") == "0"
-            print(f"Compass window, UI authentication, WebSockets, health and shutdown passed ({'Secret files with HTTP_PROXY' if file_mode else 'environment'}).")
-            if expect_settings:
-                print("Settings survived container replacement and Compass reopened its existing profile.")
-        except Exception:
-            logs = subprocess.run(["docker", "logs", "--tail", "30", name], capture_output=True, text=True)
+            if request(port, '/api/version', USERNAME + ':' + PASSWORD)[0] == 200:
+                docker('exec', name, 'python3', '/opt/compass-container/healthcheck.py')
+                return port
+        except (OSError, http.client.HTTPException, subprocess.CalledProcessError):
+            pass
+        if time.monotonic() >= deadline:
+            logs = subprocess.run(['docker', 'logs', '--tail', '25', name], capture_output=True, text=True)
             print(logs.stdout + logs.stderr)
-            raise
-        finally:
-            subprocess.run(["docker", "rm", "--force", name], capture_output=True)
+            raise AssertionError('Browser server did not become ready')
+        time.sleep(0.5)
 
 
-if __name__ == "__main__":
-    missing = subprocess.run(["docker", "run", "--rm", "--platform", "linux/amd64",
-                              "--env", "UI_USERNAME=" + USERNAME, IMAGE], capture_output=True, text=True)
-    assert missing.returncode == 2 and "UI_USERNAME and UI_PASSWORD are required" in missing.stderr
-    print("Missing UI credentials fail closed.")
-    test_documentdb_tls_policy()
-    test_gateway(file_mode=False)
-    volume = "compass-settings-smoke-" + uuid.uuid4().hex[:10]
+def remove(name):
+    subprocess.run(['docker', 'rm', '-f', '-v', name], capture_output=True)
+
+
+def stop(name):
+    docker('stop', '--timeout', '20', name)
+    assert docker('inspect', '--format', '{{.State.ExitCode}}', name) == '0'
+
+
+def test_browser():
+    name = 'compass-browser-smoke-' + uuid.uuid4().hex[:10]
     try:
-        docker("volume", "create", volume)
-        test_gateway(file_mode=True, settings_volume=volume)
-        test_gateway(file_mode=True, settings_volume=volume, expect_settings=True)
+        port = start_web(name, {'HTTP_PROXY': 'http://127.0.0.1:9', 'NO_PROXY': ''})
+        credentials = USERNAME + ':' + PASSWORD
+        for path, websocket in (('/', False), ('/api/version', False), ('/compass.js', False), ('/mongo', True)):
+            for login in (None, USERNAME + ':wrong-password', USERNAME + ':' + PASSWORD[:8]):
+                assert request(port, path, login, websocket=websocket)[0] == 401
+            status, _ = request(port, path, credentials, websocket=websocket)
+            assert status == (101 if websocket else 200), (path, status)
+        _, page = request(port, '/', credentials)
+        assert b'<html' in page.lower() and b'compass' in page.lower()
+        docker('exec', name, 'python3', '-c',
+               'import os,shutil; assert os.getuid()==10001; assert not any(shutil.which(x) for x in ["Xvfb","x11vnc","websockify","mongodb-compass"]); assert not os.path.exists("/opt/compass-container/desktop.py")')
+        docker('kill', '--signal=KILL', name)
+        docker('start', name)
+        wait_ready(name)
+        stop(name)
+        print('Native HTML, API/static/WebSocket authentication, non-root read-only runtime and forced restart passed.')
     finally:
-        subprocess.run(["docker", "volume", "rm", volume], capture_output=True)
+        remove(name)
+
+
+def test_files_and_persistence():
+    volume = 'compass-web-settings-' + uuid.uuid4().hex[:10]
+    docker('volume', 'create', volume)
+    try:
+        with tempfile.TemporaryDirectory(prefix='compass-web-secrets-') as directory:
+            Path(directory).chmod(0o755)
+            for key, value in (('username', USERNAME), ('password', PASSWORD)):
+                file = Path(directory) / key
+                file.write_text(value + '\n')
+                file.chmod(0o644)  # Dummy test credentials, readable by the container UID.
+            for attempt in range(2):
+                name = 'compass-files-smoke-' + uuid.uuid4().hex[:10]
+                try:
+                    port = start_web(name, {'UI_USERNAME': '', 'UI_PASSWORD': '',
+                        'UI_USERNAME_FILE': '/run/test-secrets/username', 'UI_PASSWORD_FILE': '/run/test-secrets/password',
+                        'COMPASS_CONNECTIONS_PASSWORD': 'separate-storage-secret'}, mounts=(
+                            f'type=bind,src={directory},dst=/run/test-secrets,readonly',
+                            f'type=volume,src={volume},dst=/home/compass/.config'))
+                    credentials = USERNAME + ':' + PASSWORD
+                    if attempt == 0:
+                        value = {'id': 'persisted', 'connectionOptions': {'connectionString': 'mongodb://user:private-storage-password@db.invalid/'}}
+                        assert request(port, '/api/connection-info', credentials, 'POST', value)[0] == 200
+                    status, data = request(port, '/api/connection-info', credentials)
+                    assert status == 200 and b'persisted' in data
+                    docker('exec', name, 'python3', '-c',
+                           'from pathlib import Path; p=list(Path.home().joinpath(".config").glob("connections-*.json")); assert p; assert all("private-storage-password" not in x.read_text() for x in p)')
+                    stop(name)
+                finally:
+                    remove(name)
+        print('Mounted UI secrets and encrypted connection persistence across container replacement passed.')
+    finally:
+        subprocess.run(['docker', 'volume', 'rm', volume], capture_output=True)
+
+
+def test_mongodb_transport():
+    prefix = 'compass-wire-' + uuid.uuid4().hex[:10]
+    network, database, web = prefix, prefix + '-db', prefix + '-web'
+    try:
+        docker('network', 'create', network)
+        docker('run', '-d', '--name', database, '--network', network, '--network-alias', 'mongo-smoke',
+               '-e', 'MONGO_INITDB_ROOT_USERNAME=smoke-user', '-e', 'MONGO_INITDB_ROOT_PASSWORD=' + DB_PASSWORD, 'mongo:8.0')
+        start_web(web, {'MONGODB_HOST': 'mongo-smoke', 'MONGODB_USERNAME': 'smoke-user',
+                       'MONGODB_PASSWORD': DB_PASSWORD, 'MONGODB_AUTH_SOURCE': 'admin', 'MONGODB_TLS': 'false'}, network=network)
+        deadline = time.monotonic() + 30
+        while True:
+            result = subprocess.run(['docker', 'exec', database, 'sh', '-c',
+                'mongosh --quiet --username "$MONGO_INITDB_ROOT_USERNAME" --password "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval "db.adminCommand({ping:1})"'], capture_output=True)
+            if result.returncode == 0:
+                break
+            assert time.monotonic() < deadline, 'MongoDB did not initialize'
+            time.sleep(1)
+        check = docker('exec', web, 'python3', '/opt/compass-container/check_connection.py')
+        assert 'Database ping succeeded' in check, check
+        output = docker('exec', '-i', '-w', '/opt/compass-web', '-e', 'SMOKE_UI_PASSWORD=' + PASSWORD,
+                        '-e', 'SMOKE_DB_PASSWORD=' + DB_PASSWORD, web, 'node', input=(ROOT / 'tests/smoke_wire.cjs').read_text())
+        print(output)
+        stop(web)
+    finally:
+        remove(web)
+        remove(database)
+        subprocess.run(['docker', 'network', 'rm', network], capture_output=True)
+
+
+def test_documentdb_tls():
+    prefix = 'compass-tls-' + uuid.uuid4().hex[:10]
+    network, backend, web = prefix, prefix + '-tls', prefix + '-web'
+    with tempfile.TemporaryDirectory(prefix='compass-tls-fixture-') as directory:
+        root = Path(directory)
+        root.chmod(0o755)
+        def openssl(*args):
+            subprocess.run(['openssl', *args], cwd=root, check=True, capture_output=True)
+        openssl('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '2', '-subj', '/CN=Test CA',
+                '-addext', 'basicConstraints=critical,CA:TRUE', '-keyout', 'ca.key', '-out', 'ca.pem')
+        openssl('req', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=tls-good', '-keyout', 'server.key', '-out', 'server.csr')
+        (root / 'extensions').write_text('subjectAltName=DNS:tls-good\n')
+        openssl('x509', '-req', '-in', 'server.csr', '-CA', 'ca.pem', '-CAkey', 'ca.key', '-CAcreateserial',
+                '-days', '2', '-extfile', 'extensions', '-out', 'server.crt')
+        openssl('req', '-newkey', 'rsa:2048', '-passout', 'pass:fixture-client-password', '-subj', '/CN=Test Client',
+                '-keyout', 'client.key', '-out', 'client.csr')
+        openssl('x509', '-req', '-in', 'client.csr', '-CA', 'ca.pem', '-CAkey', 'ca.key', '-CAcreateserial',
+                '-days', '2', '-out', 'client.crt')
+        (root / 'client.pem').write_bytes((root / 'client.key').read_bytes() + (root / 'client.crt').read_bytes())
+        openssl('req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '2', '-subj', '/CN=Other CA',
+                '-addext', 'basicConstraints=critical,CA:TRUE', '-keyout', 'other.key', '-out', 'other.pem')
+        for path in root.iterdir():
+            path.chmod(0o644)  # Ephemeral test material only.
+        echo = '''import socket,ssl,threading
+context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+context.load_cert_chain('/certs/server.crt','/certs/server.key')
+context.load_verify_locations('/certs/ca.pem')
+context.verify_mode=ssl.CERT_REQUIRED
+def serve(connection):
+    try:
+        with context.wrap_socket(connection,server_side=True) as secure:
+            while data:=secure.recv(65536): secure.sendall(data)
+    except (OSError,ssl.SSLError): connection.close()
+with socket.create_server(('0.0.0.0',27017)) as server:
+    while True:
+        connection,_=server.accept()
+        threading.Thread(target=serve,args=(connection,),daemon=True).start()
+'''
+        try:
+            docker('network', 'create', network)
+            docker('run', '-d', '--platform', 'linux/amd64', '--name', backend, '--network', network, '--network-alias', 'tls-good', '--network-alias', 'tls-wrong',
+                   '--mount', f'type=bind,src={directory},dst=/certs,readonly', '--entrypoint', 'python3', IMAGE, '-u', '-c', echo)
+            port = start_web(web, {'CONNECTION_TYPE': 'documentdb', 'MONGODB_HOST': 'tls-good', 'MONGODB_TLS_CA_FILE': '/certs/ca.pem',
+                                   'MONGODB_TLS_CERTIFICATE_KEY_FILE': '/certs/client.pem',
+                                   'MONGODB_TLS_CERTIFICATE_KEY_FILE_PASSWORD': 'fixture-client-password'},
+                            mounts=(f'type=bind,src={directory},dst=/certs,readonly',), network=network)
+            _, connections = request(port, '/api/connection-info', USERNAME + ':' + PASSWORD)
+            assert b'tlsCAFile' not in connections and b'/certs' not in connections and b'fixture-client-password' not in connections
+            assert request(port, '/api/connection-info', USERNAME + ':' + PASSWORD, 'POST',
+                           {'id': 'unsafe', 'connectionOptions': {'connectionString': 'mongodb://tls-good/?tls=false'}})[0] == 400
+            print(docker('exec', '-i', '-w', '/opt/compass-web', '-e', 'SMOKE_UI_PASSWORD=' + PASSWORD,
+                         web, 'node', input=(ROOT / 'tests/smoke_tls.cjs').read_text()))
+            stop(web)
+            remove(web)
+            start_web(web, {'CONNECTION_TYPE': 'documentdb', 'MONGODB_HOST': 'tls-good', 'MONGODB_TLS_CA_FILE': '/certs/other.pem'},
+                      mounts=(f'type=bind,src={directory},dst=/certs,readonly',), network=network)
+            print(docker('exec', '-i', '-w', '/opt/compass-web', '-e', 'SMOKE_UI_PASSWORD=' + PASSWORD,
+                         '-e', 'SMOKE_UNTRUSTED_ONLY=true', web, 'node', input=(ROOT / 'tests/smoke_tls.cjs').read_text()))
+            stop(web)
+        finally:
+            remove(web)
+            remove(backend)
+            subprocess.run(['docker', 'network', 'rm', network], capture_output=True)
+
+
+if __name__ == '__main__':
+    missing = subprocess.run(['docker', 'run', '--rm', '--platform', 'linux/amd64', '-e', 'UI_USERNAME=' + USERNAME, IMAGE], capture_output=True, text=True)
+    assert missing.returncode == 2 and 'UI_USERNAME and UI_PASSWORD are required' in missing.stderr
+    rejected = subprocess.run(['docker', 'run', '--rm', '--platform', 'linux/amd64', '-e', 'CONNECTION_TYPE=documentdb',
+                               '-e', 'MONGODB_HOST=db.invalid', '-e', 'MONGODB_TLS=false', IMAGE], capture_output=True, text=True)
+    assert rejected.returncode == 2 and 'DocumentDB requires TLS' in rejected.stderr
+    test_browser()
+    test_files_and_persistence()
+    test_mongodb_transport()
+    test_documentdb_tls()

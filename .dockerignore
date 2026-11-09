@@ -2,5 +2,11 @@
 !Dockerfile
 !app/
 !app/*.py
+!app/*.cjs
 !app/nginx.conf
+!web/
+!web/package.json
+!web/package-lock.json
+!scripts/
+!scripts/prepare_web.py
 app/__pycache__/

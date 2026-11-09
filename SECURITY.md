@@ -1,28 +1,27 @@
 # Security policy
 
-This project packages a shared Compass desktop for browser access. Review [Architecture](docs/architecture.md) and [Configuration](docs/configuration.md) before exposing it to other users or connecting it to sensitive data.
+This project packages a shared browser-native database administration UI. Review [Architecture](docs/architecture.md) and [Configuration](docs/configuration.md) before connecting it to sensitive data or exposing it to other users.
 
 ## Report a vulnerability
 
-Use **Security → Report a vulnerability** on the GitHub repository if private vulnerability reporting is enabled. If it is unavailable, open an issue asking the maintainer for a private reporting channel without including vulnerability details. Do not disclose exploits, credentials, or private infrastructure information in a public issue.
+Use **Security → Report a vulnerability** on GitHub if private reporting is enabled. Otherwise, open an issue asking for a private reporting channel without vulnerability details. Do not post exploits or secrets publicly.
 
-Include the affected commit/image version, a sanitized description, reproduction steps, expected impact, and any suggested mitigation in the private report. Never send working database credentials, tokens, private keys, or database contents. There is no guaranteed response time or published support window.
-
-For a vulnerability in an upstream component, use that component's disclosure process. Let this repository's maintainer know privately when its packaging or configuration is also affected.
+Provide the affected image/revision, sanitized reproduction steps, impact, and any suggested mitigation privately. Do not send working credentials, tokens, private keys, or database contents. There is no guaranteed response time or published support window. Report upstream component issues through their disclosure process too when appropriate.
 
 ## Deployment boundaries
 
-- Each instance is one shared desktop. Anyone with its UI credentials can interact with the same Compass session and saved connections. Use separate deployments and credentials for separate users or trust boundaries.
-- HTTP Basic authentication protects browser pages and WebSockets. Use HTTPS for browser traffic over a network; the container itself listens on HTTP port 6080. `/healthz` is intentionally public and returns a static response.
-- The DocumentDB startup policy requires verified TLS for the generated connection. It does not constrain connections a user adds or edits inside Compass. Require TLS at the database as well.
-- The desktop runs as UID/GID 10001. Electron uses `--no-sandbox` and a basic password store for container compatibility. Container isolation and access control are therefore significant parts of the deployment boundary.
-- Saved Compass settings, exports, and persistent volumes can contain database credentials. Restrict access to them, including backups and snapshots. Kubernetes Secrets also require appropriate cluster access controls.
-- Use a database account with only the permissions needed for the intended work. UI authentication does not limit database privileges or provide per-user application audit records.
+- HTTP Basic authentication protects browser pages, APIs, and database WebSockets. Use HTTPS for network browser access. The container publishes HTTP on 6080; the Node.js backend is loopback-only on 6081.
+- Authenticated users share server connection configuration and database privileges. The browser driver receives connection strings, including database credentials. Deploy separate instances and Secrets for separate trust boundaries. UI authentication is not a per-user database role or audit system.
+- The DocumentDB profile rejects unsafe startup settings and forces server-owned verified TLS for browser database sockets. Browser-supplied insecure flags and replacement trust material are ignored. Connection editing and the embedded shell are disabled for that profile. Require TLS at the database too.
+- Browser WebSockets with a different Origin host are rejected. Authorized users can access database endpoints reachable by the application; use routing, security groups, NetworkPolicy, and least-privilege database accounts to bound that access.
+- The application runs as UID/GID 10001 and supports a read-only image filesystem, dropped capabilities, and temporary writable mounts. There is no Electron sandbox exception or desktop display service.
+- Connection storage, runtime configuration, browser sessions, Secrets, backups, and exported results are sensitive. Optional server-side connection storage encrypts connection strings using a separate storage password; retain its salt file and password with protected backups.
+- `/healthz` is intentionally public and static. It does not report database availability or expose application data.
 
-## Updates and scanning
+## Dependencies and verification
 
-Use the latest reviewed project revision, rebuild with current base layers and OS updates, and scan the exact image you intend to publish. See [Security scanning and upgrades](docs/automation.md).
+The browser package and transitive dependencies are integrity-locked. Builds disable npm install scripts and apply reviewed integration hooks; source drift fails the build. Upstream notices ship with the runtime. Review [licensing and upstream components](README.md#licensing-and-upstream-components).
 
-The scan gate fails on detected HIGH or CRITICAL vulnerabilities, including unfixed findings, and fails if a complete report cannot be validated. A passing result applies to that image, scanner coverage, vulnerability database, and time. It does not guarantee that the image is free from vulnerabilities.
+Build and scan the exact image being published. The gate blocks detected HIGH/CRITICAL vulnerabilities, including unfixed ones, and fails on incomplete scans. It does not prove the absence of unknown vulnerabilities or cover every dependency embedded in frontend bundles. See [Automation](docs/automation.md).
 
-The AWS CA bundle is fetched at build time. Rebuild without cache or mount a current trusted bundle when certificate updates are needed. Keep published tags immutable, retain the previous known working image for rollback, and verify live database connectivity after deployment.
+The AWS CA bundle is fetched at build time. Use a current trusted bundle and immutable published image tags. Protect settings backups with the same access controls as the original volume.

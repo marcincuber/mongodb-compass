@@ -1,4 +1,3 @@
-import copy
 import importlib.util
 import json
 import hashlib
@@ -21,7 +20,6 @@ def script(name):
 
 
 scan = script("scan_report")
-upgrade = script("upgrade_compass")
 IMAGE_ID = "sha256:" + "1" * 64
 
 
@@ -91,70 +89,6 @@ class ScanPolicyTests(unittest.TestCase):
             for filename in (reports / "summary.md", summary):
                 self.assertIn("ERROR", filename.read_text())
                 self.assertNotIn("PASS:", filename.read_text())
-
-
-class CompassUpgradeTests(unittest.TestCase):
-    def release(self, version="1.54.0", checksum="b" * 64):
-        name = f"mongodb-compass_{version}_amd64.deb"
-        return {"tag_name": "v" + version, "draft": False, "prerelease": False, "assets": [{
-            "name": name, "digest": "sha256:" + checksum,
-            "browser_download_url": f"https://github.com/mongodb-js/compass/releases/download/v{version}/{name}",
-        }]}
-
-    def setup_root(self, directory):
-        root = Path(directory)
-        (root / "docs").mkdir()
-        (root / "k8s/examples").mkdir(parents=True)
-        (root / "Dockerfile").write_text("FROM ubuntu:26.04\nARG COMPASS_VERSION=1.53.2\nARG COMPASS_SHA256=" + "a" * 64 + "\n")
-        (root / "README.md").write_text("[Compass 1.53.2](https://github.com/mongodb-js/compass/releases/tag/v1.53.2)\n")
-        (root / "docs/publishing.md").write_text("ECR_TAG=1.53.2-4 make push\n")
-        (root / "k8s/examples/example.yaml").write_text("image: example/mongodb-compass:1.53.2-4\n")
-        return root
-
-    def test_upgrade_updates_installer_docs_and_kubernetes_examples(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.setup_root(directory)
-            pin = upgrade.resolve(root, self.release())
-            upgrade.update_files(root, pin)
-            self.assertEqual(upgrade.pinned_release(root), ("1.54.0", "b" * 64))
-            self.assertIn("Compass 1.54.0", (root / "README.md").read_text())
-            self.assertIn("v1.54.0", (root / "README.md").read_text())
-            self.assertIn("ECR_TAG=1.54.0-1", (root / "docs/publishing.md").read_text())
-            self.assertIn(":1.54.0-1", (root / "k8s/examples/example.yaml").read_text())
-
-    def test_same_release_is_noop_but_changed_checksum_is_rejected(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.setup_root(directory)
-            original = (root / "Dockerfile").read_text()
-            pin = upgrade.resolve(root, self.release("1.53.2", "a" * 64))
-            self.assertFalse(pin["changed"])
-            upgrade.update_files(root, pin)
-            self.assertEqual((root / "Dockerfile").read_text(), original)
-            with self.assertRaises(ValueError):
-                upgrade.resolve(root, self.release("1.53.2"))
-
-    def test_missing_digest_wrong_asset_and_unstable_releases_rejected(self):
-        release = self.release()
-        cases = []
-        for key, value in (("draft", True), ("prerelease", True), ("tag_name", "v1.54.0-beta.1"), ("assets", [])):
-            case = copy.deepcopy(release)
-            case[key] = value
-            cases.append(case)
-        for key, value in (("digest", None), ("digest", "sha256:bad"), ("browser_download_url", "https://example.com/installer.deb")):
-            case = copy.deepcopy(release)
-            case["assets"][0][key] = value
-            cases.append(case)
-        for release in cases:
-            with self.subTest(release=release), self.assertRaises(ValueError):
-                upgrade.release_pin(release)
-
-    def test_downgrades_and_changed_tested_checksum_rejected(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.setup_root(directory)
-            with self.assertRaises(ValueError):
-                upgrade.resolve(root, self.release("1.52.0"))
-            with self.assertRaises(ValueError):
-                upgrade.resolve(root, self.release(), expected_sha256="c" * 64)
 
 
 if __name__ == "__main__":

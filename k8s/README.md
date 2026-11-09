@@ -1,6 +1,6 @@
 # Kubernetes deployment
 
-Return to the [README](../README.md). For runtime settings use [Configuration](../docs/configuration.md); for upgrades and diagnostics use [Operations](../docs/operations.md).
+Return to the [README](../README.md). For runtime settings use [Configuration](../docs/configuration.md); for diagnostics use [Operations](../docs/operations.md).
 
 These are four standalone manifests for an existing Linux amd64 cluster. Each includes a Namespace, UI credential Secret, connection ConfigMap, one Compass Deployment, and a ClusterIP Service.
 
@@ -24,9 +24,9 @@ Both DocumentDB examples explicitly require verified TLS:
   MONGODB_TLS_CA_FILE: /opt/certs/global-bundle.pem
 ```
 
-The startup policy rejects insecure TLS settings from the URI, JSON options, or environment—even if a later setting would override them. The CA file must be readable PEM with a currently valid CA certificate. The driver then verifies the server certificate and endpoint hostname on connection. See [the TLS policy](../docs/configuration.md#documentdb) for details.
+The startup and browser transport policies reject insecure TLS settings from the URI, JSON options, or environment—even if a later setting would override them. The CA file must be readable PEM with a currently valid CA certificate. The driver then verifies the server certificate and endpoint hostname on connection. See [the TLS policy](../docs/configuration.md#documentdb) for details.
 
-Build and publish an image from the current repository before relying on this enforcement; editing YAML alone does not add the policy to an older image. The image references in the examples are placeholders for your published image. The generic MongoDB examples continue to support connections without TLS.
+Build and publish this repository's image, then replace the placeholder image reference in your chosen example. The generic MongoDB examples also support connections without TLS.
 
 ## 1. Prepare
 
@@ -53,12 +53,15 @@ Choose one example at a time: all use namespace `mongodb-compass` and the same D
 
 ```sh
 make eks-deploy
+make eks-check
 make eks-port-forward
 ```
 
-Open <http://localhost:6080/vnc.html?autoconnect=true&resize=remote>, enter the UI credentials, and click **Start** in a new Compass profile. Keep the port-forward running.
+Open <http://localhost:6080> and enter the UI credentials. Select the database connection and click **Connect**. Keep the port-forward running.
 
-`make eks-deploy` applies `secrets/compass.yaml`, restarts the desktop to load Secret/ConfigMap changes, and waits for rollout. Each deployment interrupts the current shared session. No image rebuild is needed for configuration changes. To use a different working file:
+`make eks-check` runs an authenticated database ping from the application pod using its configured URI, credentials, CA, and TLS settings. This confirms database network access separately from application health. It requires `MONGODB_HOST` or `MONGODB_URI`; skip it for an empty generic connection editor.
+
+`make eks-deploy` applies `secrets/compass.yaml`, restarts the application to load Secret/ConfigMap changes, and waits for rollout. Each deployment interrupts the current shared session. No image rebuild is needed for configuration changes. To use a different working file:
 
 ```sh
 K8S_EXAMPLE=secrets/my-compass.yaml make eks-deploy
@@ -72,9 +75,20 @@ kubectl -n mongodb-compass rollout restart deployment/mongodb-compass
 kubectl -n mongodb-compass rollout status deployment/mongodb-compass --timeout=300s
 ```
 
-Keep `replicas: 1` for one shared desktop. Separate users who need independent sessions need separate deployments and Secrets. The application reads credentials through `envFrom.secretRef`; your secret controller can manage the same named Secret.
+Keep `replicas: 1` for one shared connection store. Separate users who need independent sessions need separate deployments and Secrets. The application reads credentials through `envFrom.secretRef`; your secret controller can manage the same named Secret.
 
-## UI and database secrets
+## DocumentDB network access
+
+Before deploying, confirm the pod can resolve and reach the real DocumentDB cluster endpoint:
+
+- Provide a route between the pod network and the database VPC, with DNS resolution for the cluster endpoint.
+- Allow TCP 27017 into the DocumentDB security group from the security group that actually applies to the pod traffic (node or pod security group, depending on your EKS networking).
+- Permit database egress and DNS through any NetworkPolicy, security group, or other network control.
+- Keep the real cluster DNS name for certificate hostname verification and use an account authorized for the required database operations.
+
+See [AWS connection guidance](https://docs.aws.amazon.com/documentdb/latest/devguide/connect_programmatically.html). A ready pod or successful AWS login does not prove database reachability; use `make eks-check` after deployment. The manifests connect to an existing DocumentDB cluster and do not change its engine version or security groups.
+
+## Credentials and rotation
 
 Every example defines an Opaque Secret named `mongodb-compass-secrets` containing `UI_USERNAME`, `UI_PASSWORD`, and the database credentials. The Deployment imports it with:
 
@@ -92,21 +106,21 @@ For mounted credential files, use the supported `_FILE` variables instead and en
 
 ## Runtime and resource expectations
 
-The examples request 500m CPU, 1Gi memory, and 1Gi ephemeral storage per desktop, with limits of 2 CPU, 3Gi memory, and 3Gi ephemeral storage. They also mount a memory-backed `/dev/shm` with a 1Gi size limit. Size limits do not preallocate that memory; its actual use contributes to the container's memory consumption. Adjust resources after observing your workload, especially large result sets or exports.
+The examples request 500m CPU, 1Gi memory, and 1Gi ephemeral storage per application instance, with limits of 2 CPU, 3Gi memory, and 3Gi ephemeral storage. Adjust resources after observing your workload, especially large result sets or exports.
 
-All examples use `Recreate` updates and a 30-second termination period. Replacements interrupt browser sessions. Persistent storage is optional; the temporary mounts are needed because the image filesystem is read-only. Keep the writable home, `/tmp`, and shared-memory mounts even when you do not need a PVC.
+All examples use `Recreate` updates and a 30-second termination period. Replacements interrupt browser sessions. Persistent storage is optional; the temporary mounts are needed because the image filesystem is read-only. Keep the writable home and `/tmp` mounts even when you do not need a PVC.
 
-Startup probes allow up to roughly three minutes for the desktop to initialize. Readiness and liveness check browser infrastructure rather than the database. Successful rollout must be followed by a live connection check inside Compass.
+Startup probes allow up to roughly three minutes for the application to initialize. Readiness and liveness check browser infrastructure rather than the database. After rollout, run `make eks-check` and verify the intended operations inside Compass. Database availability is deliberately excluded from probes to avoid restart loops during a database outage.
 
 ## Persistent settings
 
-Only `mongodb-persistent.yaml` provisions storage. Its 5Gi PVC mounts `/home/compass/.config`; the rest of home/cache, `/tmp`, and shared memory stay temporary. Settings may contain saved database credentials.
+Only `mongodb-persistent.yaml` provisions storage. Its 5Gi PVC mounts `/home/compass/.config`; home and `/tmp` stay temporary. The Secret supplies a separate `COMPASS_CONNECTIONS_PASSWORD` to encrypt manually added connections. Replace that placeholder with a stable secret. Browser preferences live in the browser. Saved files and backups remain sensitive.
 
 Standard EKS needs the [EBS CSI driver and its IAM permissions](https://docs.aws.amazon.com/eks/latest/userguide/ebs-csi.html). For Auto Mode, change the StorageClass provisioner to `ebs.csi.eks.amazonaws.com` and add `eks.amazonaws.com/compute-type: auto` to the pod's `nodeSelector`, following [AWS's storage guidance](https://docs.aws.amazon.com/eks/latest/userguide/create-storage-class.html).
 
 To use an existing StorageClass, remove the StorageClass document and change the PVC's `storageClassName` before applying. A bound claim's storage class cannot be changed in place. EBS constrains later scheduling to the volume's Availability Zone.
 
-Updates use `Recreate`, and Compass exits before its display stops so it can save preferences. The class uses `Retain`: deleting the PVC leaves its EBS volume for deliberate cleanup. Switching to a temporary example detaches the PVC without deleting it. For persistent DocumentDB settings, copy the DocumentDB ConfigMap/Secret values into this example.
+Updates use `Recreate`, and the Node.js server receives graceful termination before the gateway stops. The class uses `Retain`: deleting the PVC leaves its EBS volume for deliberate cleanup. Switching to a temporary example detaches the PVC without deleting it. Environment-defined DocumentDB connections are recreated at startup and do not need persistent storage; editing is disabled in that profile.
 
 ## DocumentDB 8.0 through Istio
 
@@ -128,7 +142,7 @@ make eks-deploy
 kubectl -n istio-system get service istio-ingressgateway
 ```
 
-Use your actual ingress Service name. Point the browser hostname's DNS record at its load balancer, then open `https://YOUR_HOST/vnc.html?autoconnect=true&resize=remote`. No port-forward is needed.
+Use your actual ingress Service name. Point the browser hostname's DNS record at its load balancer, then open `https://YOUR_HOST/`. No port-forward is needed.
 
 The [Gateway](https://istio.io/latest/docs/tasks/traffic-management/ingress/secure-ingress/) redirects HTTP to HTTPS and terminates browser TLS. The VirtualService forwards UI and WebSocket paths unchanged with `timeout: 0s`. The app sends WebSocket pings every 30 seconds; [proxy idle timeouts](https://www.envoyproxy.io/docs/envoy/latest/faq/configuration/timeouts) and maximum connection lifetimes remain controlled by your ingress.
 
@@ -140,6 +154,7 @@ To reuse a shared Istio Gateway, remove the Gateway document and reference your 
 
 ```sh
 make eks-status
+make eks-check
 make eks-restart
 kubectl -n mongodb-compass logs deployment/mongodb-compass --tail=100
 kubectl -n mongodb-compass get events --sort-by=.lastTimestamp
@@ -148,7 +163,7 @@ make eks-validate
 
 Validation checks every example, including Istio resources, against downloaded schemas without contacting a live cluster. The deployment uses a non-root user, read-only root filesystem, writable temporary mounts, resource limits, and a 30-second termination period.
 
-Probes check the public static `/healthz` response and internal noVNC/VNC services, bypassing outbound proxies. Database failures appear in Compass rather than causing restart loops. Kubernetes is responsible for restarting the container if a supervised desktop process exits.
+Probes check the public static `/healthz` response and internal browser application, bypassing outbound proxies. Database failures appear in Compass rather than causing restart loops. Kubernetes is responsible for restarting the container if a supervised application process exits.
 
 | Symptom | Check |
 | --- | --- |
@@ -159,4 +174,4 @@ Probes check the public static `/healthz` response and internal noVNC/VNC servic
 | UI works but database times out | Endpoint, DNS/routes, security groups, database authentication |
 | Istio 404/503 or TLS error | Hostname, Gateway selector, Service destination, certificate namespace, gateway traffic policy |
 
-Live EKS, Istio, and database access need verification in the target environment; schema and local Docker tests cannot verify those external resources. For configuration rotation, rollback, and storage cleanup, follow the [operations guide](../docs/operations.md).
+Live EKS, Istio, and database access need verification in the target environment; schema and local Docker tests cannot verify those external resources. For configuration rotation and storage cleanup, follow the [operations guide](../docs/operations.md).

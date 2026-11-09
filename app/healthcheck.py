@@ -1,13 +1,9 @@
-import socket
+import json
 import urllib.request
-
-# Probes target pod-local services even when the workload configures an outbound proxy.
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-for url in ("http://127.0.0.1:6080/healthz", "http://127.0.0.1:6081/vnc.html"):
-    with opener.open(url, timeout=1) as response:
-        if response.status != 200:
-            raise SystemExit(1)
-with socket.create_connection(("127.0.0.1", 5900), timeout=1) as connection:
-    connection.settimeout(1)
-    if not connection.makefile("rb").read(12).startswith(b"RFB "):
+with opener.open('http://127.0.0.1:6080/healthz', timeout=1) as response:
+    if response.status != 200 or response.read().strip() != b'ok':
+        raise SystemExit(1)
+with opener.open('http://127.0.0.1:6081/healthz', timeout=1) as response:
+    if response.status != 200 or json.load(response).get('status') != 'ok':
         raise SystemExit(1)

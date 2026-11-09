@@ -8,7 +8,7 @@ List the checks you ran and their results. For checks you could not run, explain
 
 ## Deployment impact
 
-Describe configuration changes, compatibility concerns, session interruptions, storage effects, or rollback considerations. Write “None” if this does not apply.
+Describe configuration changes, compatibility concerns, session interruptions, or storage effects. Write “None” if this does not apply.
 
 ## Review checklist
 

@@ -1,7 +1,6 @@
-"""Translate runtime environment into Compass's supported connection import file."""
+"""Validate runtime connection variables and the DocumentDB TLS policy."""
 
 import json
-import os
 from pathlib import Path
 import re
 import ssl
@@ -222,51 +221,4 @@ def build_connection(env):
         "savedConnectionType": "favorite",
         "connectionOptions": {"connectionString": connection_string},
     }
-    if env.get("SSH_HOST"):
-        tunnel = {"host": env["SSH_HOST"], "username": secret(env, "SSH_USERNAME")}
-        if not tunnel["username"]:
-            raise ConfigurationError("SSH_HOST requires SSH_USERNAME")
-        try:
-            tunnel["port"] = int(env.get("SSH_PORT") or "22")
-        except ValueError:
-            raise ConfigurationError("SSH_PORT must be between 1 and 65535") from None
-        if not 1 <= tunnel["port"] <= 65535:
-            raise ConfigurationError("SSH_PORT must be between 1 and 65535")
-        for variable, key in {
-            "SSH_PASSWORD": "password", "SSH_IDENTITY_FILE": "identityKeyFile",
-            "SSH_IDENTITY_PASSPHRASE": "identityKeyPassphrase",
-        }.items():
-            value = secret(env, variable)
-            if value:
-                tunnel[key] = value
-        if tunnel.get("identityKeyFile") and not Path(tunnel["identityKeyFile"]).is_file():
-            raise ConfigurationError("Mount a readable SSH_IDENTITY_FILE")
-        result["connectionOptions"]["sshTunnel"] = tunnel
     return result
-
-
-def compass_arguments(env, runtime):
-    supplied_file = env.get("COMPASS_CONNECTION_FILE")
-    if supplied_file:
-        if env.get("CONNECTION_TYPE", "mongodb").lower() == "documentdb":
-            raise ConfigurationError("DocumentDB TLS policy requires MONGODB_URI or MONGODB_HOST; Compass exports are not supported in this profile")
-        if any(value for key, value in env.items() if key.startswith(("MONGODB_", "SSH_"))):
-            raise ConfigurationError("Use COMPASS_CONNECTION_FILE or MONGODB_/SSH_ variables")
-        if not Path(supplied_file).is_file():
-            raise ConfigurationError("Mount a readable COMPASS_CONNECTION_FILE")
-        args = ["--file=" + supplied_file]
-        passphrase = secret(env, "COMPASS_CONNECTION_PASSPHRASE")
-        if passphrase:
-            # Compass only accepts the export passphrase via a CLI argument.
-            args.append("--passphrase=" + passphrase)
-        if env.get("COMPASS_CONNECTION_ID"):
-            args.append(env["COMPASS_CONNECTION_ID"])
-        return args
-    connection = build_connection(env)
-    if connection is None:
-        return []
-    filename = Path(runtime) / "connection.json"
-    descriptor = os.open(filename, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "w") as output:
-        json.dump({"type": "Compass Connections", "version": 1, "connections": [connection]}, output)
-    return ["--file=" + str(filename), connection["id"]]

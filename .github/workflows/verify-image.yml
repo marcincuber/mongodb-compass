@@ -2,16 +2,6 @@ name: Verify container image
 
 on:
   workflow_call:
-    inputs:
-      compass_version:
-        type: string
-        default: ''
-      compass_sha256:
-        type: string
-        default: ''
-      source_sha:
-        type: string
-        default: ''
 
 permissions:
   contents: read
@@ -24,16 +14,16 @@ jobs:
     env:
       IMAGE_NAME: mongodb-compass
       IMAGE_TAG: ci-${{ github.run_id }}-${{ github.run_attempt }}
-      COMPASS_VERSION: ${{ inputs.compass_version }}
-      COMPASS_SHA256: ${{ inputs.compass_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.source_sha || github.sha }}
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.14'
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
       - name: Install test tools
         shell: bash
         run: |
@@ -58,8 +48,8 @@ jobs:
       - name: Kubernetes and Istio schemas
         run: make eks-validate
       - name: Build fresh Linux amd64 image
-        run: ./scripts/build.sh --pull --no-cache
-      - name: Desktop, authentication, secrets, persistence, and shutdown
+        run: ./scripts/build.sh --no-cache
+      - name: Browser API, database transport, TLS, secrets, and shutdown
         run: make smoke-test
       - name: Scan image and enforce zero HIGH/CRITICAL findings
         id: scan

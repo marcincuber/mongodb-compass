@@ -1,65 +1,62 @@
 # Build and publish to ECR
 
-Return to the [README](../README.md) or continue to [Kubernetes deployment](../k8s/README.md).
+Return to the [README](../README.md) or continue to [Kubernetes](../k8s/README.md).
 
-## Build
+## Build and verify
 
-Docker must be running. All builds target `linux/amd64`:
+Docker must be running. The validated target is `linux/amd64`:
 
 ```sh
 make build
 # Equivalent:
-docker build --platform linux/amd64 -t mongodb-compass:local .
+docker build --pull --platform linux/amd64 -t mongodb-compass:local .
+make smoke-test
+make scan
 ```
 
-To upgrade Compass, obtain the version and SHA-256 for the Linux amd64 package from its [official release](https://github.com/mongodb-js/compass/releases), then supply both:
+The build installs the browser package from `web/package.json` and its integrity-locked dependency tree. The package version is fixed for this application release. `make build` uses `scripts/build.sh`, defaults to Linux amd64, and pulls current base images. BuildKit caches npm downloads for repeated builds; application dependencies remain locked.
+
+For the complete local verification sequence, run `make verify`; required tools are listed in [Contributing](../CONTRIBUTING.md#development-setup).
+
+To refresh base layers, OS packages, and the build-time AWS CA bundle:
 
 ```sh
-COMPASS_VERSION=VERSION COMPASS_SHA256=SHA256 IMAGE_TAG=VERSION make build
+./scripts/build.sh --no-cache
+make smoke-test
+make scan
 ```
 
-Update both defaults in `Dockerfile` for a permanent upgrade. After building a custom tag, use the same `IMAGE_TAG` with Compose or publishing.
-
-The [weekly/manual upgrade workflow](automation.md) can update these pins and run tests automatically. Container scans include unfixed findings and block HIGH/CRITICAL vulnerabilities. The Dockerfile updates installed Ubuntu packages during a fresh build; use `./scripts/build.sh --pull --no-cache` to refresh an existing local build's OS packages.
+Use the same `IMAGE_NAME`/`IMAGE_TAG` for the build, smoke test, scan, Compose run, and push.
 
 ## Publish when needed
 
-Requirements: AWS CLI v2, configured AWS credentials, an AWS region, and ECR push permissions. Authenticate first, for example with `aws sso login --profile my-profile`.
-
-Build, test, and scan the same local image before publishing. Neither `make push` nor ECR's scan-on-push replaces the local HIGH/CRITICAL gate. The commands below also require Python 3 for smoke tests/scanning.
+Requirements: AWS CLI v2, configured credentials, a region, and ECR push permissions. Authenticate first, for example with `aws sso login --profile my-profile`.
 
 ```sh
 export AWS_PROFILE=my-profile
 export AWS_REGION=eu-west-2
 export ECR_REPOSITORY=mongodb-compass
 
-# Once, only when the repository does not exist:
+# Once, only if the repository does not exist:
 make ecr-create
 
 make build
 make smoke-test
 make scan
-# Choose a new tag for every image change.
-ECR_TAG=1.53.2-6 make push
+ECR_TAG=0.5.2-1 make push
 ```
 
-`make ecr-create` creates a repository in the authenticated account with immutable tags and scan-on-push. `make push` checks the existing local image is Linux amd64, finds the ECR repository, logs Docker in using `--password-stdin`, tags the image, and pushes it. It does not build or create a repository implicitly.
+`make ecr-create` creates a repository with immutable tags and scan-on-push. `make push` checks that the local image is Linux amd64, resolves the repository, authenticates Docker with `--password-stdin`, tags the image, and pushes. It does not build or create a repository implicitly. ECR scanning does not replace this project's HIGH/CRITICAL gate.
 
-Copy the printed image URI into your Kubernetes manifest. Existing tags in an immutable repository cannot be overwritten: increment the suffix after changes to the base image, runtime, or dependencies.
-
-The tag convention in these examples is `COMPASS_VERSION-BUILD_REVISION`: the Compass version identifies the upstream desktop, and the suffix identifies a packaging rebuild. Use a new suffix for OS fixes, runtime changes, or a refreshed CA bundle even when Compass itself has not changed. For deployments pinned by digest, use the pushed registry digest rather than a local image config ID.
-
-Before deploying, record the published image reference, source revision, and scan report. Keep the previous image available for [rollback](operations.md#update-or-roll-back-an-image). Publishing does not update a running Kubernetes deployment.
+Copy the printed image URI into your private manifest. Example tags use `BROWSER_PACKAGE_VERSION-BUILD_REVISION`; `0.5.2` identifies Compass Web, not official desktop Compass. Immutable tags cannot be overwritten. If pinning a digest, use the registry digest after pushing, not a local image config ID.
 
 | Setting | Default |
 | --- | --- |
 | `IMAGE_NAME` / `IMAGE_TAG` | `mongodb-compass` / `local` |
-| `PLATFORM` | `linux/amd64` only |
+| `PLATFORM` | `linux/amd64` |
 | `ECR_REPOSITORY` | `mongodb-compass` |
-| `ECR_TAG` | Local image tag; set a release tag explicitly |
+| `ECR_TAG` | Local tag; set a release tag explicitly |
 | `AWS_REGION` | `AWS_DEFAULT_REGION`, then AWS CLI configuration |
-| `AWS_ACCOUNT_ID` | Current account from STS; override for an existing cross-account registry |
+| `AWS_ACCOUNT_ID` | STS caller account; override for an existing cross-account registry |
 
-The node role used by EKS to pull the image is separate from the credentials used to publish it and from any database authentication role. Cross-account repositories need the appropriate repository policy.
-
-For the required ECR authentication/upload actions and CLI workflow, see [AWS's ECR guide](https://docs.aws.amazon.com/AmazonECR/latest/userguide/getting-started-cli.html). No AWS credentials are embedded in the image.
+Record the source revision, published image reference, and scan report. Publishing alone does not update running workloads. EKS image-pull permissions, publishing credentials, and database credentials are separate. See [AWS's ECR CLI guide](https://docs.aws.amazon.com/AmazonECR/latest/userguide/getting-started-cli.html).

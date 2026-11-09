@@ -16,6 +16,7 @@ type: Opaque
 stringData:
   UI_USERNAME: admin
   UI_PASSWORD: replace-with-a-strong-password
+  COMPASS_CONNECTIONS_PASSWORD: replace-with-a-separate-stable-storage-password
   # Database credentials are separate from the UI login.
   MONGODB_USERNAME: ""
   MONGODB_PASSWORD: ""
@@ -91,7 +92,7 @@ spec:
       containers:
         - name: compass
           # Replace this with your published ECR image.
-          image: 123456789012.dkr.ecr.eu-west-2.amazonaws.com/mongodb-compass:1.53.2-6
+          image: 123456789012.dkr.ecr.eu-west-2.amazonaws.com/mongodb-compass:0.5.2-1
           ports:
             - name: http
               containerPort: 6080
@@ -137,8 +138,6 @@ spec:
               mountPath: /home/compass/.config
             - name: tmp
               mountPath: /tmp
-            - name: shm
-              mountPath: /dev/shm
       volumes:
         - name: home
           emptyDir:
@@ -148,10 +147,6 @@ spec:
             claimName: mongodb-compass-config
         - name: tmp
           emptyDir:
-            sizeLimit: 1Gi
-        - name: shm
-          emptyDir:
-            medium: Memory
             sizeLimit: 1Gi
 ---
 apiVersion: v1

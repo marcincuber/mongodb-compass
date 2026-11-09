@@ -1,51 +1,64 @@
-# MongoDB Compass UI for Docker and Kubernetes
+# MongoDB Compass Web UI
 
-Access the MongoDB Compass desktop from a browser, with container builds, authenticated access, and deployment examples for Kubernetes and AWS EKS. Connect to an existing MongoDB or Amazon DocumentDB cluster, including DocumentDB 8.0 with verified TLS.
+Run a browser-native MongoDB administration UI in your own Docker image, locally or on Kubernetes/AWS EKS. Open **http://localhost:6080** to browse collections, run queries, and build aggregation pipelines against MongoDB or Amazon DocumentDB.
 
-**This is an independent project.** It packages the official Compass desktop application with a virtual display and noVNC browser access. The container and deployment examples are maintained by this repository; they are not an official MongoDB container product. No database server is included.
+This initial release builds [Compass Web 0.5.2](https://www.npmjs.com/package/compass-web/v/0.5.2), a community browser port of Compass, into an Ubuntu 26.04 image with Node.js and an authenticated Nginx gateway. It does not install the official desktop application, Electron, VNC/noVNC, or an X display server. It does not use a third-party Compass Docker image. The browser port has its own release cycle and feature set; its version is not a desktop Compass version.
 
-The image uses Ubuntu 26.04 and pins [Compass 1.53.2](https://github.com/mongodb-js/compass/releases/tag/v1.53.2) with installer checksum verification. It targets **linux/amd64**. Apple Silicon uses Docker Desktop's amd64 emulation; Linux servers and Kubernetes nodes need x86_64 CPUs.
-
-Each container provides **one shared desktop**. Everyone using the same instance sees the same session and connections. Use separate deployments for independent users or trust boundaries.
+The validated image target is **linux/amd64**. Intel/AMD Linux nodes run it directly; Apple Silicon uses Docker Desktop's amd64 emulation. No database server is included in the UI image.
 
 ## Documentation
 
 | Task | Guide |
 | --- | --- |
-| Build and run on Mac or Linux | [Local quick start](#run-locally) |
-| Set UI/database credentials, TLS, or mounted secrets | [Configuration](docs/configuration.md) |
-| Connect to DocumentDB with verified TLS | [DocumentDB quick start](#connect-to-amazon-documentdb) |
-| Build and push to ECR | [Publishing](docs/publishing.md) |
-| Deploy with Kubernetes, EBS, or Istio | [Kubernetes](k8s/README.md) |
-| Rotate credentials, update, or troubleshoot | [Operations](docs/operations.md) |
-| Container vulnerability reports and automated Compass upgrades | [GitHub Actions](docs/automation.md) |
-| Understand the runtime and repository | [Architecture](docs/architecture.md) |
-| Report a bug, improve docs, or submit code | [Contributing](CONTRIBUTING.md) |
-| Report a vulnerability privately | [Security policy](SECURITY.md) |
+| Run MongoDB and the UI together | [Local test script](#run-mongodb-and-the-ui-together) |
+| Build/run the UI alone | [Docker quick start](#run-locally) |
+| Configure credentials, TLS, or mounted secrets | [Configuration](docs/configuration.md) |
+| Connect to DocumentDB | [DocumentDB](#connect-to-amazon-documentdb) |
+| Publish your image to ECR | [Publishing](docs/publishing.md) |
+| Deploy on EKS, with optional storage or Istio | [Kubernetes](k8s/README.md) |
+| Troubleshoot or rotate secrets | [Operations](docs/operations.md) |
+| Understand build verification and security scans | [Automation](docs/automation.md) |
+| Understand the runtime or contribute | [Architecture](docs/architecture.md), [Contributing](CONTRIBUTING.md) |
+| Report a vulnerability | [Security](SECURITY.md) |
+
+## Run MongoDB and the UI together
+
+Start Docker Desktop on macOS or Docker Engine on Linux. From the repository directory:
+
+```sh
+bash ./test-script.sh
+```
+
+Wait for **Compass is ready**, then open **http://localhost:6080** and log in as `admin` with password `admin`. Select `mongodb-local:27017` in the sidebar and click **Connect**. These defaults are for local testing. To set your own passwords when initializing the database:
+
+```sh
+DB_PASSWORD='replace-with-a-database-password' \
+UI_PASSWORD='replace-with-a-ui-password' bash ./test-script.sh
+```
+
+The script builds `mongodb-compass:local` from this repository, starts/reuses `mongodb-local` on the `compass-local` network, and recreates `mongodb-compass` from the freshly built image. It preserves database data in `mongodb-local-data` and settings in `mongodb-compass-config`. Existing MongoDB passwords are not reset by changing `DB_PASSWORD`.
+
+Browser access is bound to `127.0.0.1:6080`; MongoDB is bound to `127.0.0.1:27017`. The local database uses authentication without TLS. Re-running the script interrupts UI sessions while replacing the UI container.
+
+Optionally set `COMPASS_CONNECTIONS_PASSWORD` to a separate stable password when invoking the script to retain manually added connections in the settings volume.
 
 ## Run locally
 
-Requirements: Docker Desktop on macOS or Docker Engine on Linux, Git to clone the repository, and network access to download the base image, packages, Compass installer, and AWS CA bundle. Make and AWS credentials are not needed for this quick start.
+Requirements: Docker, Git to clone the repository, and internet access for build dependencies. Make and AWS credentials are not needed.
 
 ```sh
 git clone https://github.com/marcincuber/mongodb-compass.git
 cd mongodb-compass
-docker build --platform linux/amd64 -t mongodb-compass:local .
+docker build --pull --platform linux/amd64 -t mongodb-compass:local .
 docker run -d --name mongodb-compass --platform linux/amd64 \
-  -p 127.0.0.1:6080:6080 --shm-size=1g \
+  -p 127.0.0.1:6080:6080 \
   --cap-drop=ALL --security-opt=no-new-privileges:true \
   -e UI_USERNAME=admin \
   -e UI_PASSWORD='replace-with-a-strong-password' \
   mongodb-compass:local
 ```
 
-These commands work on both Apple Silicon/Intel Macs and Linux amd64. They use no env file and open Compass for manual connection setup. Replace the UI password before running.
-
-Open <http://localhost:6080/vnc.html?autoconnect=true&resize=remote>, enter the UI username/password, and click **Start** in Compass.
-
-The published port is bound to your computer's loopback address. Use HTTPS at an ingress or reverse proxy for remote browser access: HTTP Basic authentication alone does not encrypt traffic.
-
-To connect automatically, add database options before the final image name, for example:
+Open <http://localhost:6080>. Select a configured connection and click **Connect**, or add a connection if none is configured. To supply one at startup, add these options before the image name:
 
 ```sh
 -e MONGODB_HOST=host.docker.internal \
@@ -55,28 +68,24 @@ To connect automatically, add database options before the final image name, for 
 -e MONGODB_AUTH_SOURCE=admin
 ```
 
-Omit the database username/password for an unauthenticated server. For a remote database, replace the host. For a full URI or DocumentDB, see [connection configuration](docs/configuration.md).
+Docker Desktop provides `host.docker.internal` for a database on your Mac. On Linux, also add `--add-host=host.docker.internal:host-gateway`; the database must listen on an address reachable from the Docker bridge. For another container on a shared network, use its container name. `localhost` in a database URI refers to the UI container.
 
-**Mac:** Docker Desktop provides `host.docker.internal` for databases running on the Mac.
-
-**Linux:** add `--add-host=host.docker.internal:host-gateway` before the image name when using a database on the Linux host. That database must listen on an address reachable from the Docker bridge, rather than only the host's `127.0.0.1`.
-
-For a database in another container, add `--network NETWORK_NAME` and use its container/service name. `localhost` inside Compass refers to the Compass container.
+Stop and remove an existing UI container before reusing its name. For browser access over a network, terminate HTTPS at your ingress/reverse proxy; Basic authentication alone does not encrypt HTTP traffic.
 
 ## Connect to Amazon DocumentDB
 
-After building the image, run it with your cluster endpoint and credentials. This is a complete example without an env file; stop and remove any previous container with the same name first.
+After building, start the UI with your existing cluster endpoint and database credentials:
 
 ```sh
 docker run -d --name mongodb-compass --platform linux/amd64 \
-  -p 127.0.0.1:6080:6080 --shm-size=1g \
+  -p 127.0.0.1:6080:6080 \
   --cap-drop=ALL --security-opt=no-new-privileges:true \
   -e UI_USERNAME=admin \
   -e UI_PASSWORD='replace-with-a-strong-ui-password' \
   -e CONNECTION_TYPE=documentdb \
   -e MONGODB_HOST='your-cluster.cluster-xxxxxxxxxxxx.eu-west-2.docdb.amazonaws.com' \
-  -e MONGODB_USERNAME='your-database-user' \
-  -e MONGODB_PASSWORD='your-database-password' \
+  -e MONGODB_USERNAME='database-user' \
+  -e MONGODB_PASSWORD='database-password' \
   -e MONGODB_TLS=true \
   -e MONGODB_TLS_INSECURE=false \
   -e MONGODB_TLS_ALLOW_INVALID_CERTIFICATES=false \
@@ -85,28 +94,24 @@ docker run -d --name mongodb-compass --platform linux/amd64 \
   mongodb-compass:local
 ```
 
-Open the same browser URL as above. Your container needs a network path to the cluster's VPC, DNS resolution, and database access on TCP 27017. A local Docker container does not gain private AWS network access from AWS credentials alone.
+The preset supplies `authSource=admin`, `replicaSet=rs0`, `readPreference=secondaryPreferred`, and `retryWrites=false`. TLS, a valid readable CA bundle, certificate verification, and hostname verification are mandatory. The server enforces verified TLS on browser database sockets too, and disables editing connections in this profile.
 
-The DocumentDB preset supplies `authSource=admin`, `replicaSet=rs0`, `readPreference=secondaryPreferred`, and `retryWrites=false`. It refuses disabled TLS or certificate/hostname verification and validates the CA bundle before launching. This policy covers the generated startup connection; users can still edit connections inside Compass. See [DocumentDB configuration](docs/configuration.md#documentdb) for IAM authentication, custom CA bundles, and compatibility details.
-
-For EKS, use the [DocumentDB TLS or DocumentDB 8.0 + Istio example](k8s/README.md). Browser HTTPS and database TLS secure separate network connections.
+The container needs VPC routing, DNS, and security-group access to TCP 27017. AWS credentials alone do not establish network access. For DocumentDB 8.0, use an existing 8.0 cluster; the client cannot select its engine version. After deploying on EKS, run `make eks-check` to verify the configured database connection from the pod. See [configuration and limitations](docs/configuration.md#documentdb), or the [EKS/Istio examples](k8s/README.md).
 
 ## Use an env file or Compose
-
-Instead of the inline `-e` options, prepare an env file:
 
 ```sh
 cp .env.example .env.runtime
 chmod 600 .env.runtime
-# Edit the UI credentials and database connection.
+# Edit UI credentials and database settings before starting.
 docker run -d --name mongodb-compass --platform linux/amd64 \
-  --env-file .env.runtime -p 127.0.0.1:6080:6080 --shm-size=1g \
+  --env-file .env.runtime -p 127.0.0.1:6080:6080 \
   --cap-drop=ALL --security-opt=no-new-privileges:true mongodb-compass:local
 ```
 
-For DocumentDB, start from `.env.documentdb.example`. Env file values are literal: omit shell quotes and do not escape `$`. Linux host databases need the extra `--add-host` option above.
+For DocumentDB, copy `.env.documentdb.example` instead. Env-file values are literal: omit shell quotes and do not escape `$`.
 
-For Compose, install Docker Compose 2.30+ and Make, prepare `.env.runtime`, then run:
+With Make and Docker Compose 2.30+:
 
 ```sh
 make build
@@ -115,54 +120,21 @@ make logs
 make down
 ```
 
-Compose preserves settings in its `compass-config` volume. On Linux, add `extra_hosts: ["host.docker.internal:host-gateway"]` to the Compose service when using a host database.
+Compose retains its settings volume. Browser preferences are stored in the browser; manually added server-side connections survive replacement only when `COMPASS_CONNECTIONS_PASSWORD` is configured with a settings volume. Environment-defined connections are recreated at startup. See [storage configuration](docs/configuration.md#connection-storage).
 
-## Logs, updates, and cleanup
-
-```sh
-docker logs -f mongodb-compass
-docker stop --time 20 mongodb-compass
-docker rm mongodb-compass
-```
-
-Direct Docker runs keep settings until the container is removed. Recreate the container to load changed environment variables; rebuild first if the image changed. Remove a previous container before reusing its name. With Compose, `make up` applies environment changes, while `docker compose down --volumes` deletes saved settings.
-
-If Docker runs on a remote Linux server, tunnel its browser port:
+## Validate and contribute
 
 ```sh
-ssh -N -L 6080:127.0.0.1:6080 user@linux-host
+make build   # Build the Linux amd64 image; fetch current base images
+make verify  # Unit tests, Kubernetes schemas, build, smoke tests, vulnerability scan
 ```
 
-Then use the same localhost browser URL. For browser access over a network, use HTTPS through your ingress or reverse proxy. UI credentials and database credentials are separate, and all viewers of a container share one desktop.
+`make verify` requires Python 3, Node.js, OpenSSL, ShellCheck, kubeconform, and Docker. See [development setup](CONTRIBUTING.md#development-setup) for details. Individual checks remain available as `make test`, `make eks-validate`, `make smoke-test`, and `make scan`.
 
-## Kubernetes and publishing
+Smoke tests use temporary containers/networks, MongoDB 8.0, and generated test certificates. They verify authenticated database traffic through the browser transport and TLS failures without AWS access. Live EKS, Istio, and DocumentDB connectivity must still be verified in your environment.
 
-Choose a [standalone Kubernetes example](k8s/README.md): DocumentDB with TLS, MongoDB without TLS, persistent settings, or DocumentDB 8.0 through Istio. UI credentials come from a Kubernetes Secret in every example.
+Read [Contributing](CONTRIBUTING.md) for development setup and pull requests. Use [issue templates](https://github.com/marcincuber/mongodb-compass/issues/new/choose) for bugs and feature requests, and [Security](SECURITY.md) for private vulnerability reports.
 
-The DocumentDB startup profile requires TLS with certificate and hostname verification, validates the CA bundle, and rejects insecure overrides. See the [DocumentDB TLS policy](docs/configuration.md#documentdb).
+## Licensing and upstream components
 
-Follow the [ECR publishing guide](docs/publishing.md) before setting the image in your chosen manifest. Apply configuration changes with `make eks-deploy`; it restarts the desktop to reload Secret/ConfigMap values.
-
-## Validate changes
-
-For development prerequisites and the checks relevant to each kind of change, see [Contributing](CONTRIBUTING.md).
-
-```sh
-make test          # Python 3, Make, OpenSSL with passwd -6, and ShellCheck
-make eks-validate  # kubeconform; Kubernetes and Istio schemas are downloaded
-make build
-make smoke-test    # Docker: real desktop, UI auth, WebSockets, secrets, probes, and shutdown
-make scan          # Pinned Trivy scanner; fails on HIGH or CRITICAL findings
-```
-
-Smoke tests create and remove temporary containers and a settings volume without an AWS account or database. They check profile persistence across container replacement, a read-only root filesystem, and non-root execution like the Kubernetes examples. Live EKS scheduling, Istio routing, and database connectivity must be verified in the target environment.
-
-GitHub Actions runs these checks on PRs, pushes, and a daily schedule. A separate weekly/manual workflow validates official Compass upgrades and opens a PR only after tests and the scan gate pass. See [automation setup and reports](docs/automation.md).
-
-## Contribute and get help
-
-Documentation improvements, reproducible bug reports, tests, and deployment fixes are welcome. Read [Contributing](CONTRIBUTING.md) before opening a pull request, or use the repository's [issue templates](https://github.com/marcincuber/mongodb-compass/issues/new/choose). Remove credentials, connection strings containing passwords, and private infrastructure details from reports. For vulnerabilities, follow [Security](SECURITY.md).
-
-## Licensing
-
-This repository does not currently include a project license. Do not assume permission to redistribute or reuse its code; ask the maintainer to clarify licensing before doing so. MongoDB Compass and the other bundled components retain their respective upstream license terms. This repository does not replace those terms or confer MongoDB or AWS support.
+This repository does not yet include a project license. Ask the maintainer to clarify reuse terms. The browser package and bundled components retain their upstream terms and license files. This project is not an official MongoDB container product and does not confer MongoDB or AWS support.

@@ -1,0 +1,12 @@
+{
+  "name": "mongodb-compass-browser-runtime",
+  "version": "0.5.2",
+  "private": true,
+  "description": "Pinned browser-native Compass runtime for this container",
+  "dependencies": {
+    "compass-web": "0.5.2"
+  },
+  "overrides": {
+    "@fastify/static": "10.1.1"
+  }
+}

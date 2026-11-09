@@ -10,7 +10,7 @@ from urllib.parse import parse_qsl, unquote, urlsplit
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
-from connection import ConfigurationError, build_connection, compass_arguments, secret
+from connection import ConfigurationError, build_connection, secret
 
 
 class ConnectionTests(unittest.TestCase):
@@ -171,10 +171,6 @@ class ConnectionTests(unittest.TestCase):
             with self.subTest(now=now), patch("connection.time.time", return_value=now), self.assertRaises(ConfigurationError):
                 self.connection(CONNECTION_TYPE="documentdb", MONGODB_TLS_CA_FILE=self.ca_file)
 
-    def test_documentdb_export_cannot_bypass_tls_policy(self):
-        with tempfile.NamedTemporaryFile() as export, tempfile.TemporaryDirectory() as runtime:
-            with self.assertRaises(ConfigurationError):
-                compass_arguments({"CONNECTION_TYPE": "documentdb", "COMPASS_CONNECTION_FILE": export.name}, runtime)
 
     def test_tls_ssl_alias_override(self):
         options = dict(parse_qsl(urlsplit(self.uri(MONGODB_URI="mongodb://db/?ssl=false", MONGODB_TLS="true")).query))
@@ -194,7 +190,6 @@ class ConnectionTests(unittest.TestCase):
             {"MONGODB_OPTIONS": "broken"}, {"MONGODB_OPTIONS": '{"option":null}'},
             {"MONGODB_OPTIONS": '{"option":{"nested":true}}'},
             {"MONGODB_TLS_CA_FILE": "/does/not/exist"},
-            {"SSH_HOST": "bastion"}, {"SSH_HOST": "bastion", "SSH_USERNAME": "user", "SSH_PORT": "0"},
         ]
         for env in cases:
             with self.subTest(env=env), self.assertRaises(ConfigurationError):
@@ -218,38 +213,12 @@ class ConnectionTests(unittest.TestCase):
             secret({"MONGODB_PASSWORD_FILE": "/secret/private-name"}, "MONGODB_PASSWORD")
         self.assertNotIn("private-name", str(error.exception))
 
-    def test_ssh_options(self):
-        with tempfile.NamedTemporaryFile() as key:
-            connection = self.connection(SSH_HOST="bastion", SSH_USERNAME="ec2-user", SSH_PORT="2222",
-                                         SSH_IDENTITY_FILE=key.name, SSH_IDENTITY_PASSPHRASE="secret")
-        self.assertEqual(connection["connectionOptions"]["sshTunnel"], {
-            "host": "bastion", "username": "ec2-user", "port": 2222,
-            "identityKeyFile": key.name, "identityKeyPassphrase": "secret"})
 
-    def test_import_file_schema_permissions_and_no_credentials_in_arguments(self):
-        with tempfile.TemporaryDirectory() as runtime:
-            args = compass_arguments({"MONGODB_HOST": "db", "MONGODB_USERNAME": "user",
-                                      "MONGODB_PASSWORD": "private-password"}, runtime)
-            self.assertNotIn("private-password", " ".join(args))
-            filename = Path(runtime) / "connection.json"
-            self.assertEqual(filename.stat().st_mode & 0o777, 0o600)
-            payload = json.loads(filename.read_text())
-            self.assertEqual(payload["type"], "Compass Connections")
-            self.assertEqual(payload["version"], 1)
-            self.assertEqual(payload["connections"][0]["id"], args[1])
-            self.assertIn("private-password", payload["connections"][0]["connectionOptions"]["connectionString"])
 
     def test_connection_id_stable_between_credential_rotations(self):
         self.assertEqual(self.connection(MONGODB_USERNAME="a")["id"],
                          self.connection(MONGODB_USERNAME="b")["id"])
 
-    def test_supplied_compass_file(self):
-        with tempfile.NamedTemporaryFile() as export:
-            args = compass_arguments({"COMPASS_CONNECTION_FILE": export.name,
-                                      "COMPASS_CONNECTION_ID": "id"}, "/unused")
-            self.assertEqual(args, ["--file=" + export.name, "id"])
-            with self.assertRaises(ConfigurationError):
-                compass_arguments({"COMPASS_CONNECTION_FILE": export.name, "MONGODB_HOST": "db"}, "/unused")
 
 
 if __name__ == "__main__":

@@ -79,7 +79,7 @@ spec:
       containers:
         - name: compass
           # Replace this with your published ECR image.
-          image: 123456789012.dkr.ecr.eu-west-2.amazonaws.com/mongodb-compass:1.53.2-6
+          image: 123456789012.dkr.ecr.eu-west-2.amazonaws.com/mongodb-compass:0.5.2-1
           ports:
             - name: http
               containerPort: 6080
@@ -123,18 +123,12 @@ spec:
               mountPath: /home/compass
             - name: tmp
               mountPath: /tmp
-            - name: shm
-              mountPath: /dev/shm
       volumes:
         - name: home
           emptyDir:
             sizeLimit: 1Gi
         - name: tmp
           emptyDir:
-            sizeLimit: 1Gi
-        - name: shm
-          emptyDir:
-            medium: Memory
             sizeLimit: 1Gi
 ---
 apiVersion: v1
@@ -196,8 +190,8 @@ spec:
       match:
         - uri:
             prefix: /
-      # No rewrites: forward both noVNC assets and /websockify to the authenticated gateway.
-      # Disable the route request timeout for long-running desktop connections.
+      # No rewrites: forward browser assets, API requests, and /mongo WebSockets unchanged.
+      # Disable the route request timeout for long-running database WebSockets.
       timeout: 0s
       route:
         - destination:
