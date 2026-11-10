@@ -19,6 +19,8 @@ The workflow creates a verification image. Publishing to ECR and deploying to Ku
 
 The MongoDB smoke fixture has up to 120 seconds to complete its initialization and restart. Readiness requires an authenticated ping from the application container through the Docker network. Each check has a timeout; an exited fixture fails immediately. Initialization failures print the container state, last connection-check result, and recent database logs before cleanup.
 
+The temporary `mongo:8.0` fixture sets `GLIBC_TUNABLES=glibc.pthread.rseq=1` to disable TCMalloc per-CPU caches. This follows [MongoDB's own kernel compatibility test](https://github.com/mongodb/mongo/blob/r8.0.32/jstests/noPassthrough/rseq_linux_compatibility/rseq_kernel_compatibility_check.js) for [SERVER-121912](https://jira.mongodb.org/browse/SERVER-121912), which can prevent MongoDB from starting on newer GitHub runner kernels. The smoke test verifies the allocator setting through `serverStatus` and still requires authenticated database reads and writes. This setting applies only to the test database; it is not added to the UI image or Kubernetes manifests.
+
 ## Read the security result
 
 Open a workflow run's **Summary**. A complete validated scan reports its image config ID, pinned scanner, timestamp, and severity counts:

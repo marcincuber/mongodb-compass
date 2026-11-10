@@ -188,7 +188,11 @@ def test_mongodb_transport():
     network, database, web = prefix, prefix + '-db', prefix + '-web'
     try:
         docker('network', 'create', network)
+        # MongoDB's rseq regression test uses this to disable TCMalloc per-CPU
+        # caches on kernels affected by SERVER-121912. Keep it fixture-local.
+        # https://github.com/mongodb/mongo/blob/r8.0.32/jstests/noPassthrough/rseq_linux_compatibility/rseq_kernel_compatibility_check.js
         docker('run', '-d', '--name', database, '--network', network, '--network-alias', 'mongo-smoke',
+               '-e', 'GLIBC_TUNABLES=glibc.pthread.rseq=1',
                '-e', 'MONGO_INITDB_ROOT_USERNAME=smoke-user', '-e', 'MONGO_INITDB_ROOT_PASSWORD=' + DB_PASSWORD, 'mongo:8.0')
         start_web(web, {'MONGODB_HOST': 'mongo-smoke', 'MONGODB_USERNAME': 'smoke-user',
                        'MONGODB_PASSWORD': DB_PASSWORD, 'MONGODB_AUTH_SOURCE': 'admin', 'MONGODB_TLS': 'false'}, network=network)
