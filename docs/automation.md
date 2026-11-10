@@ -17,6 +17,8 @@ It calls [verify-image.yml](../.github/workflows/verify-image.yml) to validate t
 
 The workflow creates a verification image. Publishing to ECR and deploying to Kubernetes are separate steps in the [publishing](publishing.md) and [Kubernetes](../k8s/README.md) guides. Scheduled runs use the default branch and may start later than requested.
 
+The MongoDB smoke fixture has up to 120 seconds to complete its initialization and restart. Readiness requires an authenticated ping from the application container through the Docker network. Each check has a timeout; an exited fixture fails immediately. Initialization failures print the container state, last connection-check result, and recent database logs before cleanup.
+
 ## Read the security result
 
 Open a workflow run's **Summary**. A complete validated scan reports its image config ID, pinned scanner, timestamp, and severity counts:

@@ -89,6 +89,43 @@ def stop(name):
     assert docker('inspect', '--format', '{{.State.ExitCode}}', name) == '0'
 
 
+def wait_mongodb_ready(database, web, timeout=120):
+    """Wait for authenticated network access after the image's init/restart cycle."""
+    deadline = time.monotonic() + timeout
+    last_check = 'Database connection has not succeeded yet.'
+    print('Waiting for the MongoDB fixture and authenticated database access...', flush=True)
+    while True:
+        state = json.loads(docker('inspect', '--format', '{{json .State}}', database))
+        if not state['Running'] or state.get('Paused'):
+            reason = 'MongoDB fixture stopped before becoming ready'
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            reason = f'MongoDB did not initialize within {timeout} seconds'
+            break
+        try:
+            # Use the application's driver, credentials and Docker-network endpoint.
+            # The image's temporary localhost-only initialization server is not ready.
+            result = subprocess.run(['docker', 'exec', web, 'python3',
+                                     '/opt/compass-container/check_connection.py'],
+                                    capture_output=True, text=True, timeout=min(30, remaining))
+            if result.returncode == 0:
+                assert 'Database ping succeeded' in result.stdout, result.stdout
+                print(result.stdout.strip(), flush=True)
+                return
+            last_check = result.stderr.strip() or result.stdout.strip() or f'Connection check exited {result.returncode}'
+        except subprocess.TimeoutExpired:
+            last_check = 'Database connection check timed out.'
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(2, remaining))
+    print(f'{reason}. Container state: {json.dumps(state)}', flush=True)
+    print(last_check, flush=True)
+    logs = subprocess.run(['docker', 'logs', '--tail', '60', database], capture_output=True, text=True, timeout=10)
+    print(logs.stdout + logs.stderr, flush=True)
+    raise AssertionError(reason)
+
+
 def test_browser():
     name = 'compass-browser-smoke-' + uuid.uuid4().hex[:10]
     try:
@@ -155,16 +192,7 @@ def test_mongodb_transport():
                '-e', 'MONGO_INITDB_ROOT_USERNAME=smoke-user', '-e', 'MONGO_INITDB_ROOT_PASSWORD=' + DB_PASSWORD, 'mongo:8.0')
         start_web(web, {'MONGODB_HOST': 'mongo-smoke', 'MONGODB_USERNAME': 'smoke-user',
                        'MONGODB_PASSWORD': DB_PASSWORD, 'MONGODB_AUTH_SOURCE': 'admin', 'MONGODB_TLS': 'false'}, network=network)
-        deadline = time.monotonic() + 30
-        while True:
-            result = subprocess.run(['docker', 'exec', database, 'sh', '-c',
-                'mongosh --quiet --username "$MONGO_INITDB_ROOT_USERNAME" --password "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin --eval "db.adminCommand({ping:1})"'], capture_output=True)
-            if result.returncode == 0:
-                break
-            assert time.monotonic() < deadline, 'MongoDB did not initialize'
-            time.sleep(1)
-        check = docker('exec', web, 'python3', '/opt/compass-container/check_connection.py')
-        assert 'Database ping succeeded' in check, check
+        wait_mongodb_ready(database, web)
         output = docker('exec', '-i', '-w', '/opt/compass-web', '-e', 'SMOKE_UI_PASSWORD=' + PASSWORD,
                         '-e', 'SMOKE_DB_PASSWORD=' + DB_PASSWORD, web, 'node', input=(ROOT / 'tests/smoke_wire.cjs').read_text())
         print(output)
